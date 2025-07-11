@@ -1,0 +1,39 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+scrape_configs:
+  # The job name is added as a label `job=<job_name>` to any timeseries scraped from this config.
+  - job_name: 'prometheus'
+
+    # metrics_path defaults to '/metrics'
+    # scheme defaults to 'http'.
+
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Flume Water Exporter
+  - job_name: 'flume-water-exporter'
+    scrape_interval: 30s
+    metrics_path: '/metrics'
+    
+    static_configs:
+      - targets: ['localhost:8001']
+        labels:
+          service: 'flume-water'
+          environment: 'production'
+    
+    # Optional: Add basic auth if needed
+    # basic_auth:
+    #   username: 'admin'
+    #   password: 'password'
+    
+    # Optional: Add TLS configuration if needed
+    # tls_config:
+    #   ca_file: /path/to/ca.crt
+    #   cert_file: /path/to/cert.crt
+    #   key_file: /path/to/key.key 

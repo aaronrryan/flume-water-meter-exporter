@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  flume-exporter:
+    build: .
+    container_name: flume-water-exporter
+    ports:
+      - "8001:8000"
+    environment:
+      - FLUME_CLIENT_ID=${FLUME_CLIENT_ID}
+      - FLUME_CLIENT_SECRET=${FLUME_CLIENT_SECRET}
+      - FLUME_USERNAME=${FLUME_USERNAME}
+      - FLUME_PASSWORD=${FLUME_PASSWORD}
+      - EXPORTER_PORT=8001
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    env_file:
+      - .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - flume-network
+
+networks:
+  flume-network:
+    driver: bridge 
