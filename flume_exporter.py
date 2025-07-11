@@ -14,9 +14,17 @@ import schedule
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from dotenv import load_dotenv
-from prometheus_client import start_http_server, Gauge, Counter, Histogram, Info
+from prometheus_client import start_http_server, Gauge, Counter, Histogram, Info, REGISTRY, PROCESS_COLLECTOR, PLATFORM_COLLECTOR, GC_COLLECTOR
 from flask import Flask, Response
 import threading
+import base64
+import json as js
+import traceback
+
+# Disable default collectors to remove Python GC and process metrics
+REGISTRY.unregister(PROCESS_COLLECTOR)
+REGISTRY.unregister(PLATFORM_COLLECTOR)
+REGISTRY.unregister(GC_COLLECTOR)
 
 # Load environment variables
 load_dotenv()
@@ -40,12 +48,21 @@ class FlumeAPI:
         self.password = password
         self.access_token = None
         self.token_expires_at = None
+        self.user_id = None
         self.session = requests.Session()
+        
+        # Authenticate immediately upon initialization
+        logger.info("Initializing FlumeAPI - attempting authentication...")
+        if not self.authenticate():
+            logger.error("Failed to authenticate during initialization")
+        else:
+            logger.info("Successfully authenticated during initialization")
     
     def authenticate(self) -> bool:
-        """Authenticate with the Flume API using OAuth2"""
+        """Authenticate with the Flume API using OAuth"""
         try:
-            auth_url = f"{self.BASE_URL}/oauth2/token"
+            logger.info("Starting authentication process...")
+            auth_url = f"{self.BASE_URL}/oauth/token"
             auth_data = {
                 'client_id': self.client_id,
                 'client_secret': self.client_secret,
@@ -53,19 +70,45 @@ class FlumeAPI:
                 'username': self.username,
                 'password': self.password
             }
-            
-            response = self.session.post(auth_url, data=auth_data)
+            headers = {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            }
+            logger.info(f"Making authentication request to: {auth_url} with data: {auth_data}")
+            response = self.session.post(auth_url, json=auth_data, headers=headers)
+            logger.info(f"Authentication response status: {response.status_code}")
+            logger.info(f"Authentication response text: {response.text}")
             response.raise_for_status()
-            
             token_data = response.json()
-            self.access_token = token_data['access_token']
-            self.token_expires_at = datetime.now() + timedelta(seconds=token_data['expires_in'])
-            
+            logger.info(f"Token response: {token_data}")  # Debug log
+            if 'data' in token_data and isinstance(token_data['data'], list) and token_data['data']:
+                token_info = token_data['data'][0]
+                self.access_token = token_info['access_token']
+                expires_in = token_info.get('expires_in', 3600)
+                self.token_expires_at = datetime.now() + timedelta(seconds=expires_in)
+                logger.info(f"Access token: {self.access_token}")
+                logger.info(f"Expires in: {expires_in}")
+                # Extract user_id from JWT access token
+                try:
+                    payload = self.access_token.split('.')[1]
+                    payload += '=' * (-len(payload) % 4)
+                    user_info = js.loads(base64.urlsafe_b64decode(payload).decode())
+                    logger.info(f"Decoded JWT payload: {user_info}")
+                    self.user_id = str(user_info.get('user_id') or user_info.get('user', ''))
+                    logger.info(f"Extracted user_id: {self.user_id}")
+                except Exception as e:
+                    logger.error(f"Failed to decode JWT or extract user_id: {e}")
+                    logger.error(traceback.format_exc())
+                    self.user_id = None
+            else:
+                logger.error(f"Unexpected token response format: {token_data}")
+                self.user_id = None
+                return False
             logger.info("Successfully authenticated with Flume API")
             return True
-            
         except Exception as e:
             logger.error(f"Authentication failed: {e}")
+            logger.error(traceback.format_exc())
             return False
     
     def _get_headers(self) -> Dict[str, str]:
@@ -95,37 +138,79 @@ class FlumeAPI:
     def get_devices(self) -> List[Dict[str, Any]]:
         """Get list of user devices"""
         try:
+            logger.info(f"Fetching devices for user_id: {getattr(self, 'user_id', None)}")
+            if not hasattr(self, 'user_id') or not self.user_id:
+                logger.error("user_id not set after authentication")
+                return []
             response = self.session.get(
-                f"{self.BASE_URL}/users/me/devices",
+                f"{self.BASE_URL}/users/{self.user_id}/devices",
                 headers=self._get_headers()
             )
+            logger.info(f"Devices response status: {response.status_code}")
+            logger.info(f"Devices response text: {response.text}")
             response.raise_for_status()
             data = response.json()
+            logger.info(f"Devices data: {data}")
             return data.get('data', [])
         except Exception as e:
             logger.error(f"Failed to get devices: {e}")
+            logger.error(traceback.format_exc())
             return []
     
     def get_consumption_data(self, device_id: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
         """Get consumption data for a specific device and time period"""
         try:
-            params = {
-                'start_date': start_date,
-                'end_date': end_date,
-                'bucket': 'MIN'  # 1-minute intervals
+            url = f"{self.BASE_URL}/users/{self.user_id}/devices/{device_id}/query"
+            body = {
+                "queries": [
+                    {
+                        "request_id": "usage",
+                        "bucket": "MIN",
+                        "since_datetime": start_date,
+                        "until_datetime": end_date
+                    }
+                ]
             }
-            
-            response = self.session.get(
-                f"{self.BASE_URL}/users/me/devices/{device_id}/consumption",
-                headers=self._get_headers(),
-                params=params
-            )
+            logger.info(f"Getting consumption data for device {device_id} from {start_date} to {end_date}")
+            response = self.session.post(url, headers=self._get_headers(), json=body)
+            logger.info(f"Consumption response status: {response.status_code}")
             response.raise_for_status()
             data = response.json()
-            return data.get('data', [])
+            
+            # Log only success/failure, not the full data
+            if 'data' in data and isinstance(data['data'], list) and data['data']:
+                usage_data = data['data'][0].get('usage', [])
+                logger.info(f"Retrieved {len(usage_data)} consumption data points for device {device_id}")
+                return usage_data
+            else:
+                logger.warning(f"No consumption data found for device {device_id}")
+                return []
         except Exception as e:
             logger.error(f"Failed to get consumption data for device {device_id}: {e}")
+            logger.error(traceback.format_exc())
             return []
+
+    def get_current_flow_rate(self, device_id: str) -> Optional[float]:
+        """Get the current flow rate for a device (gallons per minute)"""
+        try:
+            url = f"{self.BASE_URL}/users/{self.user_id}/devices/{device_id}/query/active"
+            logger.info(f"Fetching current flow rate from: {url}")
+            response = self.session.get(url, headers=self._get_headers())
+            logger.info(f"Flow rate response status: {response.status_code}")
+            response.raise_for_status()
+            data = response.json()
+            
+            # The flow rate is directly in data['data'][0]['gpm']
+            if 'data' in data and isinstance(data['data'], list) and data['data']:
+                flow_rate = data['data'][0].get('gpm')
+                if flow_rate is not None:
+                    logger.info(f"Retrieved flow rate: {flow_rate} GPM for device {device_id}")
+                return flow_rate
+            return None
+        except Exception as e:
+            logger.error(f"Failed to get current flow rate for device {device_id}: {e}")
+            logger.error(traceback.format_exc())
+            return None
 
 class FlumeMetrics:
     """Prometheus metrics for Flume Water data"""
@@ -134,57 +219,10 @@ class FlumeMetrics:
         # Device information
         self.device_info = Info('flume_device', 'Information about Flume devices', ['device_id', 'device_name', 'location'])
         
-        # Water consumption metrics
-        self.water_consumption_gallons = Gauge(
-            'flume_water_consumption_gallons',
-            'Water consumption in gallons',
-            ['device_id', 'device_name']
-        )
-        
-        self.water_consumption_liters = Gauge(
-            'flume_water_consumption_liters',
-            'Water consumption in liters',
-            ['device_id', 'device_name']
-        )
-        
         self.water_flow_rate = Gauge(
             'flume_water_flow_rate',
             'Current water flow rate in gallons per minute',
             ['device_id', 'device_name']
-        )
-        
-        # Daily consumption
-        self.daily_consumption = Gauge(
-            'flume_daily_consumption_gallons',
-            'Daily water consumption in gallons',
-            ['device_id', 'device_name', 'date']
-        )
-        
-        # Monthly consumption
-        self.monthly_consumption = Gauge(
-            'flume_monthly_consumption_gallons',
-            'Monthly water consumption in gallons',
-            ['device_id', 'device_name', 'year', 'month']
-        )
-        
-        # API request metrics
-        self.api_requests_total = Counter(
-            'flume_api_requests_total',
-            'Total number of API requests',
-            ['endpoint', 'status']
-        )
-        
-        self.api_request_duration = Histogram(
-            'flume_api_request_duration_seconds',
-            'API request duration in seconds',
-            ['endpoint']
-        )
-        
-        # Error metrics
-        self.api_errors_total = Counter(
-            'flume_api_errors_total',
-            'Total number of API errors',
-            ['endpoint', 'error_type']
         )
 
 class FlumeExporter:
@@ -238,114 +276,65 @@ class FlumeExporter:
                 # Update device info metrics
                 for device in devices:
                     device_id = device.get('id')
-                    device_name = device.get('name', 'Unknown')
-                    location = device.get('location', {}).get('address', 'Unknown')
+                    device_name = f"Flume {device.get('product', 'Unknown')}"
+                    location = f"Location {device.get('location_id', 'Unknown')}"
                     
-                    self.metrics.device_info.info({
-                        'device_id': device_id,
-                        'device_name': device_name,
-                        'location': location
+                    # Fix Info metric usage
+                    self.metrics.device_info.labels(
+                        device_id=device_id,
+                        device_name=device_name,
+                        location=location
+                    ).info({
+                        'product': device.get('product', 'Unknown'),
+                        'type': str(device.get('type', 'Unknown')),
+                        'connected': str(device.get('connected', False))
                     })
                 
                 logger.info(f"Updated devices cache with {len(devices)} devices")
                 
         except Exception as e:
             logger.error(f"Failed to update devices cache: {e}")
-            self.metrics.api_errors_total.labels(endpoint='devices', error_type='cache_update').inc()
-    
+
     def collect_consumption_data(self):
         """Collect consumption data for all devices"""
         try:
             self.update_devices_cache()
             
-            # Get data for the last hour
+            # Get data for the last 23 hours (staying under 1440 minute limit)
             end_date = datetime.now()
-            start_date = end_date - timedelta(hours=1)
+            start_date = end_date - timedelta(hours=23)
             
             for device in self.devices_cache:
                 device_id = device.get('id')
-                device_name = device.get('name', 'Unknown')
+                device_name = f"Flume {device.get('product', 'Unknown')}"
                 
                 if not device_id:
                     continue
                 
-                # Get consumption data
+                # Get consumption data for the last 23 hours
                 consumption_data = self.api.get_consumption_data(
                     device_id,
                     start_date.strftime('%Y-%m-%d %H:%M:%S'),
                     end_date.strftime('%Y-%m-%d %H:%M:%S')
                 )
                 
-                if consumption_data:
-                    # Get the most recent data point
-                    latest_data = consumption_data[-1]
-                    
-                    # Update current consumption metrics
-                    consumption_gallons = latest_data.get('value', 0)
-                    consumption_liters = consumption_gallons * 3.78541  # Convert to liters
-                    
-                    self.metrics.water_consumption_gallons.labels(
+                # Removed water consumption metrics update
+                
+                # Get current flow rate from /query/active
+                flow_rate = self.api.get_current_flow_rate(device_id)
+                if flow_rate is not None:
+                    self.metrics.water_flow_rate.labels(
                         device_id=device_id,
                         device_name=device_name
-                    ).set(consumption_gallons)
-                    
-                    self.metrics.water_consumption_liters.labels(
-                        device_id=device_id,
-                        device_name=device_name
-                    ).set(consumption_liters)
-                    
-                    # Calculate flow rate (difference from previous reading)
-                    if len(consumption_data) > 1:
-                        prev_data = consumption_data[-2]
-                        prev_consumption = prev_data.get('value', 0)
-                        time_diff = (latest_data.get('timestamp', 0) - prev_data.get('timestamp', 0)) / 60.0  # minutes
-                        
-                        if time_diff > 0:
-                            flow_rate = (consumption_gallons - prev_consumption) / time_diff
-                            self.metrics.water_flow_rate.labels(
-                                device_id=device_id,
-                                device_name=device_name
-                            ).set(flow_rate)
+                    ).set(flow_rate)
                 
-                # Update daily consumption
-                daily_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-                daily_data = self.api.get_consumption_data(
-                    device_id,
-                    daily_start.strftime('%Y-%m-%d %H:%M:%S'),
-                    end_date.strftime('%Y-%m-%d %H:%M:%S')
-                )
-                
-                if daily_data:
-                    daily_total = sum(point.get('value', 0) for point in daily_data)
-                    self.metrics.daily_consumption.labels(
-                        device_id=device_id,
-                        device_name=device_name,
-                        date=daily_start.strftime('%Y-%m-%d')
-                    ).set(daily_total)
-                
-                # Update monthly consumption
-                monthly_start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-                monthly_data = self.api.get_consumption_data(
-                    device_id,
-                    monthly_start.strftime('%Y-%m-%d %H:%M:%S'),
-                    end_date.strftime('%Y-%m-%d %H:%M:%S')
-                )
-                
-                if monthly_data:
-                    monthly_total = sum(point.get('value', 0) for point in monthly_data)
-                    self.metrics.monthly_consumption.labels(
-                        device_id=device_id,
-                        device_name=device_name,
-                        year=monthly_start.strftime('%Y'),
-                        month=monthly_start.strftime('%m')
-                    ).set(monthly_total)
+                logger.info(f"Collected data for device {device_id} ({device_name})")
             
             logger.info("Successfully collected consumption data")
             
         except Exception as e:
             logger.error(f"Failed to collect consumption data: {e}")
-            self.metrics.api_errors_total.labels(endpoint='consumption', error_type='data_collection').inc()
-    
+
     def run_scheduler(self):
         """Run the data collection scheduler"""
         # Collect data every 5 minutes
@@ -371,6 +360,7 @@ class FlumeExporter:
 
 def main():
     """Main entry point"""
+    logger.info("Starting main() entry point...")
     # Validate environment variables
     required_env_vars = ['FLUME_CLIENT_ID', 'FLUME_CLIENT_SECRET', 'FLUME_USERNAME', 'FLUME_PASSWORD']
     missing_vars = [var for var in required_env_vars if not os.getenv(var)]
@@ -382,13 +372,17 @@ def main():
             logger.error(f"  - {var}")
         return 1
     
-    # Get port from environment or use default
     port = int(os.getenv('EXPORTER_PORT', '8001'))
+    logger.info(f"Exporter will run on port {port}")
     
-    # Create and start exporter
-    exporter = FlumeExporter()
-    exporter.start(port)
-    
+    try:
+        logger.info("Instantiating FlumeExporter...")
+        exporter = FlumeExporter()
+        logger.info("FlumeExporter instantiated. Starting exporter...")
+        exporter.start(port)
+    except Exception as e:
+        logger.error(f"Exception in main: {e}")
+        logger.error(traceback.format_exc())
     return 0
 
 if __name__ == '__main__':
