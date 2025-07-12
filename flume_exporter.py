@@ -269,7 +269,9 @@ class FlumeExporter:
             if (self.last_devices_update is None or 
                 (current_time - self.last_devices_update).seconds > self.devices_cache_ttl):
                 
-                devices = self.api.get_devices()
+                all_devices = self.api.get_devices()
+                # Filter to only include devices with type="2"
+                devices = [device for device in all_devices if device.get('type') == 2]
                 self.devices_cache = devices
                 self.last_devices_update = current_time
                 
@@ -290,7 +292,7 @@ class FlumeExporter:
                         'connected': str(device.get('connected', False))
                     })
                 
-                logger.info(f"Updated devices cache with {len(devices)} devices")
+                logger.info(f"Updated devices cache with {len(devices)} type-2 devices (filtered from {len(all_devices)} total devices)")
                 
         except Exception as e:
             logger.error(f"Failed to update devices cache: {e}")
@@ -328,7 +330,7 @@ class FlumeExporter:
                         device_name=device_name
                     ).set(flow_rate)
                 
-                logger.info(f"Collected data for device {device_id} ({device_name})")
+                logger.info(f"Collected data for type-2 device {device_id} ({device_name})")
             
             logger.info("Successfully collected consumption data")
             
