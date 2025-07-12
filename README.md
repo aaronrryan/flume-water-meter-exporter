@@ -1,33 +1,24 @@
 # Flume Water Prometheus Exporter
 
-A Python-based Prometheus exporter that collects water consumption data from the Flume Water API and exposes it as metrics for monitoring and alerting.
+A Python-based Prometheus exporter that collects water flow rate data from the Flume Water API and exposes it as metrics for monitoring and alerting.
 
 ## Features
 
-- **Real-time Water Monitoring**: Collects current water consumption, flow rates, and historical data
-- **Multiple Time Periods**: Tracks daily, monthly, and real-time consumption metrics
+- **Real-time Water Flow Monitoring**: Collects current water flow rates from Flume devices
 - **Device Management**: Supports multiple Flume devices with individual metrics
 - **Prometheus Integration**: Exposes standard Prometheus metrics format
 - **Docker Support**: Easy deployment with Docker and Docker Compose
-- **Health Monitoring**: Built-in health checks and error tracking
+- **Health Monitoring**: Built-in health checks
 - **Authentication**: Secure OAuth2 authentication with token refresh
+- **Minimal Resource Usage**: Clean metrics output without default Python/process metrics
 
 ## Metrics Exposed
 
-### Water Consumption Metrics
-- `flume_water_consumption_gallons`: Current water consumption in gallons
-- `flume_water_consumption_liters`: Current water consumption in liters
+### Water Flow Metrics
 - `flume_water_flow_rate`: Current water flow rate in gallons per minute
-- `flume_daily_consumption_gallons`: Daily water consumption in gallons
-- `flume_monthly_consumption_gallons`: Monthly water consumption in gallons
 
 ### Device Information
-- `flume_device`: Device information including name and location
-
-### API Monitoring
-- `flume_api_requests_total`: Total number of API requests
-- `flume_api_request_duration_seconds`: API request duration
-- `flume_api_errors_total`: Total number of API errors
+- `flume_device_info`: Device information including name, location, and connection status
 
 ## Prerequisites
 
@@ -97,7 +88,7 @@ docker build -t flume-water-exporter .
 # Run the container
 docker run -d \
   --name flume-exporter \
-  -p 8001:8000 \
+  -p 8001:8001 \
   --env-file .env \
   flume-water-exporter
 ```
@@ -114,17 +105,13 @@ Once running, the exporter will be available at:
 ### Example Metrics Output
 
 ```
-# HELP flume_water_consumption_gallons Water consumption in gallons
-# TYPE flume_water_consumption_gallons gauge
-flume_water_consumption_gallons{device_id="12345",device_name="Main Water Meter"} 1250.5
+# HELP flume_device_info Information about Flume devices
+# TYPE flume_device_info gauge
+flume_device_info{connected="True",device_id="12345",device_name="Flume flume2",location="Location 123",product="flume2",type="1"} 1.0
 
 # HELP flume_water_flow_rate Current water flow rate in gallons per minute
 # TYPE flume_water_flow_rate gauge
-flume_water_flow_rate{device_id="12345",device_name="Main Water Meter"} 2.3
-
-# HELP flume_daily_consumption_gallons Daily water consumption in gallons
-# TYPE flume_daily_consumption_gallons gauge
-flume_daily_consumption_gallons{device_id="12345",device_name="Main Water Meter",date="2024-01-15"} 45.2
+flume_water_flow_rate{device_id="12345",device_name="Flume flume2"} 2.3
 ```
 
 ### Prometheus Configuration
@@ -158,8 +145,8 @@ scrape_configs:
 ### API Rate Limiting
 
 - The exporter respects Flume API rate limits
-- Data collection runs every 5 minutes by default
-- Adjust collection frequency based on your needs and API limits
+- Data collection runs every minute by default
+- The API has a limit of 1440 data points per query
 
 ## Configuration Options
 
@@ -178,7 +165,7 @@ scrape_configs:
 
 You can modify the following in `flume_exporter.py`:
 
-- **Collection Interval**: Change `schedule.every(5).minutes` to adjust frequency
+- **Collection Interval**: Change `schedule.every(1).minutes` to adjust frequency
 - **Data Retention**: Modify cache TTL values
 - **Metrics**: Add custom metrics in the `FlumeMetrics` class
 - **API Endpoints**: Extend the `FlumeAPI` class for additional endpoints
@@ -192,14 +179,13 @@ You can modify the following in `flume_exporter.py`:
    - Check if your Flume account is active
    - Ensure your application is approved in the developer portal
 
-2. **No Data Available**
+2. **No Flow Rate Data**
    - Verify your Flume devices are online
-   - Check if devices have recent activity
+   - Check if devices have recent water flow activity
    - Review API rate limits
 
 3. **High Memory Usage**
    - Reduce collection frequency
-   - Implement data retention policies
    - Monitor cache sizes
 
 ### Logs
@@ -244,35 +230,33 @@ groups:
 ### Grafana Dashboards
 
 Create dashboards to visualize:
-- Daily/monthly water consumption trends
 - Real-time flow rates
 - Device status and health
-- API performance metrics
+- Historical flow rate trends
 
-## Contributing
+## Development
+
+### Project Structure
+
+```
+flume-water-meter-exporter/
+├── flume_exporter.py      # Main exporter application
+├── requirements.txt       # Python dependencies
+├── Dockerfile            # Docker container definition
+├── docker-compose.yml    # Docker Compose configuration
+├── .env                  # Environment variables (create from env.example)
+├── env.example           # Example environment file
+└── README.md            # This file
+```
+
+### Contributing
 
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Add tests if applicable
+4. Test thoroughly
 5. Submit a pull request
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Support
-
-For issues and questions:
-1. Check the troubleshooting section
-2. Review Flume API documentation
-3. Open an issue on GitHub
-
-## Changelog
-
-### v1.0.0
-- Initial release
-- Basic water consumption metrics
-- OAuth2 authentication
-- Docker support
-- Prometheus integration 
+This project is open source and available under the MIT License. 

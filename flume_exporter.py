@@ -337,8 +337,8 @@ class FlumeExporter:
 
     def run_scheduler(self):
         """Run the data collection scheduler"""
-        # Collect data every 5 minutes
-        schedule.every(5).minutes.do(self.collect_consumption_data)
+        # Collect data every minute
+        schedule.every(1).minutes.do(self.collect_consumption_data)
         
         # Initial data collection
         self.collect_consumption_data()
